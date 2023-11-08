@@ -1,116 +1,72 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-# @Author   : SFNCO-Studio
-# @Time     : 2023/4/3 14:57
-# @File     : main.py
-# @Project  : Deep in Conlda
-# @Uri      : https://sfnco.com.cn/
-
 import torch
-import torch.nn as nn
-import torch.utils.data as Data
-import torchvision
-from tqdm import tqdm
-
-path = "./data/"
-
-device = torch.device("mps")  # macos GPU加速
-
-transForm = torchvision.transforms.Compose(
-    [torchvision.transforms.ToTensor(), torchvision.transforms.Normalize(mean=[0.5], std=[0.5])])
-
-trainData = torchvision.datasets.MNIST(path, train=True, transform=transForm, download=True)
-
-testData = torchvision.datasets.MNIST(path, train=False, transform=transForm)
-
-BATCH_SIZE = 256
-
-tranDataLoader = Data.DataLoader(dataset=trainData, batch_size=BATCH_SIZE, shuffle=True)
-testDataLoader = Data.DataLoader(dataset=testData, batch_size=BATCH_SIZE)
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from torchvision.datasets import MNIST
+import matplotlib.pyplot as plt
 
 
 class Net(torch.nn.Module):
+
     def __init__(self):
-        super(Net, self).__init__()
-        self.model = nn.Sequential(
-            nn.Conv2d(in_channels=1, out_channels=16, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
+        super().__init__()
+        self.fc1 = torch.nn.Linear(28 * 28, 64)
+        self.fc2 = torch.nn.Linear(64, 64)
+        self.fc3 = torch.nn.Linear(64, 64)
+        self.fc4 = torch.nn.Linear(64, 10)
 
-            nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
+    def forward(self, x):
+        x = torch.nn.functional.relu(self.fc1(x))
+        x = torch.nn.functional.relu(self.fc2(x))
+        x = torch.nn.functional.relu(self.fc3(x))
+        x = torch.nn.functional.log_softmax(self.fc4(x), dim=1)
+        return x
 
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
 
-            nn.Flatten(),
-            nn.Linear(in_features=7 * 7 * 64, out_features=128),
-            nn.ReLU(),
-            nn.Linear(in_features=128, out_features=10),
-            nn.Softmax(dim=1)
-        )
+def get_data_loader(is_train):
+    to_tensor = transforms.Compose([transforms.ToTensor()])
+    data_set = MNIST("", is_train, transform=to_tensor, download=True)
+    return DataLoader(data_set, batch_size=15, shuffle=True)
 
-    def forward(self, input):
-        output = self.model(input)
-        return output
+
+def evaluate(test_data, net):
+    n_correct = 0
+    n_total = 0
+    with torch.no_grad():
+        for (x, y) in test_data:
+            outputs = net.forward(x.view(-1, 28 * 28))
+            for i, output in enumerate(outputs):
+                if torch.argmax(output) == y[i]:
+                    n_correct += 1
+                n_total += 1
+    return n_correct / n_total
 
 
 def main():
+    train_data = get_data_loader(is_train=True)
+    test_data = get_data_loader(is_train=False)
     net = Net()
-    print(net.to(device))
-    lossA = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(net.parameters())
 
-    EPOCHS = 100
-
-    history = {'Test Loss': [], 'Test Accuracy': []}
-
-    for epoch in range(1, EPOCHS + 1):
-        processBar = tqdm(tranDataLoader, unit='step')
-
-        net.train(True)
-
-        for step, (trainImg, labels) in enumerate(processBar):
-            trainImg = trainImg.to(device)
-            labels = labels.to(device)
-
+    print("initial accuracy:", evaluate(test_data, net))
+    optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
+    for epoch in range(2):
+        for (x, y) in train_data:
             net.zero_grad()
-
-            outputs = net(trainImg)
-
-            loss = lossA(outputs, labels)
-
-            predictions = torch.argmax(outputs, dim=1)
-            accuracy = torch.sum(predictions == labels) / labels.shape[0]
+            output = net.forward(x.view(-1, 28 * 28))
+            loss = torch.nn.functional.nll_loss(output, y)
             loss.backward()
             optimizer.step()
+        print("epoch", epoch, "accuracy:", evaluate(test_data, net))
 
-            processBar.set_description("[%d/%d] Loss:%.4f, Acc:%.4f" % (epoch, EPOCHS, loss.item(), accuracy.item()))
-
-            if step == len(processBar) - 1:
-                correct, totalLoss = 0, 0
-                net.train(False)
-                for testImgs, labels in testDataLoader:
-                    testImgs = testImgs.to(device)
-                    labels = labels.to(device)
-                    outputs = net(testImgs)
-                    loss = lossA(outputs, labels)
-                    predictions = torch.argmax(outputs, dim=1)
-
-                    totalLoss += loss
-                    correct += torch.sum(predictions == labels)
-                testAccuracy = correct / (BATCH_SIZE * len(testDataLoader))
-                testLoss = totalLoss / len(testDataLoader)
-                history['Test Loss'].append(testLoss.item())
-                history['Test Accuracy'].append(testAccuracy.item())
-                processBar.set_description("[%d/%d] Loss: %.4f, Acc: %.4f, Test Loss: %.4f, Test Acc: %.4f" %
-                                           (epoch, EPOCHS, loss.item(), accuracy.item(), testLoss.item(),
-                                            testAccuracy.item()))
-                processBar.close()
-
-    torch.save(net, './model.pth')
+    torch.save(net,"./model.pth")
+    for (n, (x, _)) in enumerate(test_data):
+        if n > 3:
+            break
+        predict = torch.argmax(net.forward(x[0].view(-1, 28 * 28)))
+        plt.figure(n)
+        plt.imshow(x[0].view(28, 28))
+        plt.title("prediction: " + str(int(predict)))
+    plt.show()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
